@@ -1,0 +1,98 @@
+# =============================================
+# Sales IQ - Docker Compose (Development)
+# =============================================
+# Services: PostgreSQL 16 + TimescaleDB, Redis 7.x, MinIO
+
+services:
+  # --- PostgreSQL 16 with TimescaleDB ---
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: salesiq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: salesiq
+      POSTGRES_PASSWORD: salesiq_dev_2024
+      POSTGRES_DB: salesiq
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U salesiq -d salesiq"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - salesiq-network
+
+  # --- Redis 7.x ---
+  redis:
+    image: redis:7-alpine
+    container_name: salesiq-redis
+    restart: unless-stopped
+    command: redis-server --requirepass salesiq_redis_dev --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "salesiq_redis_dev", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - salesiq-network
+
+  # --- MinIO (S3-compatible object storage) ---
+  minio:
+    image: minio/minio:latest
+    container_name: salesiq-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: salesiq_minio
+      MINIO_ROOT_PASSWORD: salesiq_minio_dev_2024
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - salesiq-network
+
+  # --- MinIO bucket initializer ---
+  minio-init:
+    image: minio/mc:latest
+    container_name: salesiq-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set salesiq http://minio:9000 salesiq_minio salesiq_minio_dev_2024;
+      mc mb --ignore-existing salesiq/salesiq-documents;
+      mc mb --ignore-existing salesiq/salesiq-exports;
+      mc mb --ignore-existing salesiq/salesiq-ocr;
+      mc anonymous set download salesiq/salesiq-exports;
+      exit 0;
+      "
+    networks:
+      - salesiq-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  salesiq-network:
+    driver: bridge
